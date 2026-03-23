@@ -1,15 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'screens/publica/new_restaurante.dart';
-import 'screens/login_screen.dart';
-import 'screens/register_screen.dart';
-import 'screens/cliente/maps_cli_activity.dart';
-import 'screens/dueño/maps_due_activity.dart';
-import 'dart:convert';
 import 'package:provider/provider.dart';
-import 'config/theme_provider.dart';
-import 'config/app_themes.dart';
-import 'screens/dueño/restaurante_selector.dart';
+import 'dart:convert';
+
+// Importaciones de la nueva arquitectura
+import 'presentation/screens/auth/login_screen.dart';
+import 'presentation/screens/auth/register_screen.dart';
+import 'presentation/screens/auth/phone_verification_screen.dart';
+import 'presentation/screens/cliente/client_home_screen.dart';
+import 'presentation/screens/owner/owner_home_screen.dart';
+import 'presentation/screens/owner/new_business_screen.dart';
+import 'presentation/screens/owner/business_selector_screen.dart';
+
+// Importaciones de la capa Core
+import 'core/config/theme_provider.dart';
+import 'core/config/app_themes.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -29,7 +34,7 @@ class MyApp extends StatelessWidget {
     return Consumer<ThemeProvider>(
       builder: (context, themeProvider, _) {
         return MaterialApp(
-          title: 'foodmaps',
+          title: 'FoodMaps 360',
           theme: lightTheme,
           darkTheme: darkTheme,
           themeMode: themeProvider.themeMode,
@@ -42,26 +47,23 @@ class MyApp extends StatelessWidget {
                 return MaterialPageRoute(builder: (_) => const LoginScreen());
               case '/register':
                 return MaterialPageRoute(builder: (_) => const RegistroScreen());
-              case '/new_restaurante':
-                return MaterialPageRoute(builder: (_) => const NewRestauranteScreen());
-              case '/restaurante_selector':
-                final restaurantes = settings.arguments as List;
+              case '/phone_verification':
+                final email = settings.arguments as String? ?? '';
+                return MaterialPageRoute(builder: (_) => PhoneVerificationScreen(email: email));
+              case '/new_business':
+                return MaterialPageRoute(builder: (_) => const NewBusinessScreen());
+              case '/business_selector':
+                final businesses = settings.arguments as List<Map<String, dynamic>>;
                 return MaterialPageRoute(
-                  builder: (_) => RestauranteSelectorScreen(restaurantes: restaurantes),
+                  builder: (_) => BusinessSelectorScreen(businesses: businesses),
                 );
-              case '/dueno_home':
-                final restaurante = settings.arguments;
-                int restauranteId = 0;
-                if (restaurante is Map && restaurante['id'] != null) {
-                  restauranteId = restaurante['id'] is int
-                      ? restaurante['id']
-                      : int.tryParse(restaurante['id'].toString()) ?? 0;
-                }
+              case '/owner_home':
+                final businessId = settings.arguments as int? ?? 0;
                 return MaterialPageRoute(
-                  builder: (_) => MapsDueActivity(restauranteId: restauranteId),
+                  builder: (_) => OwnerHomeScreen(businessId: businessId),
                 );
-              case '/mapsCliActivity':
-                return MaterialPageRoute(builder: (_) => const MapsCliActivity());
+              case '/client_home':
+                return MaterialPageRoute(builder: (_) => const ClientHomeScreen());
               default:
                 return MaterialPageRoute(
                   builder: (_) => Scaffold(
@@ -81,34 +83,13 @@ class AuthWrapper extends StatelessWidget {
 
   Future<Map<String, dynamic>> _getAuthState() async {
     final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('auth_token');
-    final keepSession = prefs.getBool('mantenersesion') ?? false;
-    final username = prefs.getString('username');
-    final password = prefs.getString('password');
-    final userRole = prefs.getInt('userRole') ?? 1;
-    final forcedLogout = prefs.getBool('forcedLogout') ?? false;
-    final restauranteId = prefs.getInt('restaurante_id');
-    final restaurantesJson = prefs.getString('restaurantes');
-    List restaurantes = [];
-    if (restaurantesJson != null && restaurantesJson.isNotEmpty) {
-      try {
-        restaurantes = List<Map<String, dynamic>>.from(jsonDecode(restaurantesJson));
-      } catch (_) {}
-    }
-
-    // Imprimir logs de diagnóstico para depurar problemas de sesión
-    print('[AUTH_WRAPPER] Estado actual: token=${token != null}, mantenersesion=$keepSession');
-    print('[AUTH_WRAPPER] Credenciales: username=${username != null}, password=${password != null}');
-
     return {
-      'token': token,
-      'keepSession': keepSession,
-      'username': username,
-      'password': password,
-      'userRole': userRole,
-      'forcedLogout': forcedLogout,
-      'restauranteId': restauranteId,
-      'restaurantes': restaurantes,
+      'token': prefs.getString('auth_token'),
+      'userRole': prefs.getInt('userRole') ?? 1,
+      'businessId': prefs.getInt('business_id'),
+      'businesses': jsonDecode(prefs.getString('businesses') ?? '[]'),
+      'isPhoneVerified': prefs.getBool('is_phone_verified') ?? false,
+      'email': prefs.getString('email'),
     };
   }
 
@@ -117,90 +98,42 @@ class AuthWrapper extends StatelessWidget {
     return FutureBuilder<Map<String, dynamic>>(
       future: _getAuthState(),
       builder: (context, snapshot) {
-        if (!snapshot.hasData) {
-          // Loader personalizado con logo
-          return const Scaffold(
-            backgroundColor: Colors.white,
-            body: Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Image(
-                    image: AssetImage('assets/icons/iconFoodMaps.png'),
-                    width: 120,
-                    height: 120,
-                  ),
-                  SizedBox(height: 32),
-                  CircularProgressIndicator(),
-                ],
-              ),
-            ),
-          );
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
         }
-        final auth = snapshot.data!;
+
+        final auth = snapshot.data ?? {};
         final token = auth['token'];
-        final keepSession = auth['keepSession'];
-        final username = auth['username'];
-        final password = auth['password'];
-        final userRole = auth['userRole'];
-        final forcedLogout = auth['forcedLogout'];
-        final restauranteId = auth['restauranteId'];
-        final restaurantes = auth['restaurantes'];
+        final isPhoneVerified = auth['isPhoneVerified'] ?? false;
+        final email = auth['email'] ?? '';
 
-        // --- Lógica de navegación robusta ---
-        if (forcedLogout) {
-          print('[VISTA AUTHWRAPPER] forcedLogout, mostrando LoginScreen');
-          print('[VISTA AUTHWRAPPER] [REDIR] Redirigiendo a LoginScreen por forcedLogout');
-          return const LoginScreen();
-        }
-
-        // Verificar si tenemos un token válido
         if (token == null || token.isEmpty) {
-          print('[VISTA AUTHWRAPPER] No hay token, mostrando LoginScreen');
-          print('[VISTA AUTHWRAPPER] [REDIR] Redirigiendo a LoginScreen por falta de token');
           return const LoginScreen();
         }
-
-        // Si no mantenemos sesión, verificar que tengamos credenciales para auto-login
-        if (!keepSession && (username == null || password == null)) {
-          print('[VISTA AUTHWRAPPER] No mantener sesión y sin credenciales, mostrando LoginScreen');
-          print('[VISTA AUTHWRAPPER] [REDIR] Redirigiendo a LoginScreen por no mantener sesión');
-          return const LoginScreen();
+        
+        if (!isPhoneVerified) {
+          return PhoneVerificationScreen(email: email);
         }
 
-        // A partir de aquí sabemos que hay token y que o bien mantenemos sesión o tenemos credenciales
+        final userRole = auth['userRole'];
+        
+        if (userRole == 2) { // Lógica para el Dueño
+          final businesses = auth['businesses'] as List;
+          final businessId = auth['businessId'];
 
-        // Si es dueño (rol 2)
-        if (userRole == 2) {
-          if (restaurantes.isEmpty) {
-            print('[VISTA AUTHWRAPPER] Dueño sin restaurantes, mostrando NewRestauranteScreen');
-            print('[VISTA AUTHWRAPPER] [REDIR] Redirigiendo a NewRestauranteScreen por dueño sin restaurantes');
-            return const NewRestauranteScreen();
+          if (businesses.isEmpty) {
+            return const NewBusinessScreen();
           }
-          if (restaurantes.length > 1 && (restauranteId == null || restauranteId == 0)) {
-            print('[VISTA AUTHWRAPPER] Dueño con varios restaurantes, mostrando selector');
-            print('[VISTA AUTHWRAPPER] [REDIR] Redirigiendo a RestauranteSelectorScreen por dueño con varios restaurantes');
-            return RestauranteSelectorScreen(restaurantes: restaurantes);
+          if (businesses.length > 1 && businessId == null) {
+            return BusinessSelectorScreen(businesses: businesses.cast<Map<String, dynamic>>());
           }
-          // Si solo hay uno o ya hay uno seleccionado
-          final selectedRestId = restauranteId ?? (restaurantes.isNotEmpty ? restaurantes[0]['id'] : null);
-          if (selectedRestId != null && selectedRestId != 0) {
-            print('[VISTA AUTHWRAPPER] Dueño con restaurante seleccionado, mostrando MapsDueActivity');
-            print('[VISTA AUTHWRAPPER] [REDIR] Redirigiendo a MapsDueActivity por dueño con restaurante seleccionado');
-            return MapsDueActivity(restauranteId: selectedRestId);
-          }
+          
+          final selectedId = businessId ?? businesses.first['id'];
+          return OwnerHomeScreen(businessId: selectedId);
         }
-        // Cliente
-        print('[VISTA AUTHWRAPPER] Cliente autenticado, mostrando MapsCliActivity');
-        print('[VISTA AUTHWRAPPER] [REDIR] Redirigiendo a MapsCliActivity por cliente autenticado');
-        return const MapsCliActivity();
+        
+        return const ClientHomeScreen();
       },
     );
   }
 }
-
-// Recomendación: Navega entre vistas principales usando pushReplacementNamed o pushNamedAndRemoveUntil
-// para evitar que se apilen LoginScreen, RegistroScreen y NewRestauranteScreen en el stack.
-// Ejemplo:
-// Navigator.pushReplacementNamed(context, '/login');
-// Navigator.pushNamedAndRemoveUntil(context, '/login', (route) => false);

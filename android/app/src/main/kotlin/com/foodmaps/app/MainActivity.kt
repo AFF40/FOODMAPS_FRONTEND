@@ -1,4 +1,4 @@
-package com.example.cases
+package com.foodmaps.app
 
 import io.flutter.embedding.android.FlutterActivity
 
